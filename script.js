@@ -1,12 +1,6 @@
 /**
  * script.js — Intro Hoa + Canvas Image Trail
- * ─────────────────────────────────────────────
- * Tối ưu:
- *  1. Object Pool cố định — không push/shift/GC
- *  2. Idle-aware RAF — tự cancelAnimationFrame khi rảnh
- *  3. Throttled events — 1 lần cập nhật pos mỗi frame
- *  4. Lazy + look-ahead preload — không nghẽn RAM
- *  5. Hard spawn cap — pool đầy thì bỏ qua, không overwrite
+ * Ảnh được load từ mảng IMAGES[] (base64) định nghĩa trong images_b64.js
  */
 
 /* ═══════════════════════════════════════════
@@ -31,67 +25,32 @@ var IS_TOUCH  = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 var IS_MOBILE = IS_TOUCH && window.screen.width <= 900;
 
 /* ═══════════════════════════════════════════
-   BASE PATH — tự động detect cho GitHub Pages
-   VD: https://user.github.io/repo/  → base = đúng thư mục
-       hoặc local file → dùng relative fallback
-═══════════════════════════════════════════ */
-var _base = (function() {
-  // Lấy script tag hiện tại để tính base path tuyệt đối
-  var scripts = document.getElementsByTagName('script');
-  var src = '';
-  for (var s = 0; s < scripts.length; s++) {
-    if (scripts[s].src && scripts[s].src.indexOf('script.js') !== -1) {
-      src = scripts[s].src;
-      break;
-    }
-  }
-  if (src) {
-    // bỏ "script.js" lấy thư mục gốc: "https://user.github.io/repo"
-    return src.replace(/\/script\.js(\?.*)?$/, '');
-  }
-  // fallback: dùng pathname của trang
-  var p = window.location.pathname.replace(/\/[^\/]*$/, '');
-  return window.location.origin + p;
-})();
-
-function getImgUrl(name) {
-  return _base + '/img/' + name + '.png';
-}
-
-/* ═══════════════════════════════════════════
    CONFIG
 ═══════════════════════════════════════════ */
-var IMG_LIST = ['img1','img2','img3','img4','img5','img6','img8','img9','img10'];
-
 var CFG = {
-  totalImages : IMG_LIST.length,
+  totalImages : IMAGES.length,
   minDist     : IS_MOBILE ? 55  : 90,
   poolSize    : IS_MOBILE ? 6   : 10,
   imgW        : IS_MOBILE ? 110 : 210,
   imgH        : IS_MOBILE ? 83  : 158,
   totalFrames : IS_MOBILE ? 36  : 65,
   fpsCap      : IS_MOBILE ? 30  : 60,
-  lookAheadN  : 5
+  lookAheadN  : 3
 };
 
 /* ═══════════════════════════════════════════
-   IMAGE CACHE — lazy + sequential
-   _cache[i] = null      : chưa bắt đầu
-   _cache[i] = 'loading' : đang load
-   _cache[i] = 'error'   : lỗi
-   _cache[i] = Image     : sẵn sàng ✓
+   IMAGE CACHE — preload từ base64
 ═══════════════════════════════════════════ */
-var _cache = [];
-(function(){ for(var i=0;i<CFG.totalImages;i++) _cache[i]=null; })();
+var _cache = new Array(CFG.totalImages).fill(null);
 
 function loadImg(idx) {
-  if (_cache[idx] !== null) return; // đã load hoặc đang load
+  if (_cache[idx] !== null) return;
   _cache[idx] = 'loading';
-  (function(i){
+  (function(i) {
     var im = new Image();
     im.onload  = function () { _cache[i] = im; };
     im.onerror = function () { _cache[i] = 'error'; };
-    im.src = getImgUrl(IMG_LIST[i]);
+    im.src = IMAGES[i % IMAGES.length];
   })(idx);
 }
 
@@ -103,7 +62,6 @@ function prewarm(onAllLoaded) {
   var total = CFG.totalImages;
   var done  = 0;
 
-  // Build bee loading bar HTML
   var hintEl = document.getElementById('surprise-hint');
   if (hintEl) {
     hintEl.innerHTML =
@@ -141,7 +99,7 @@ function prewarm(onAllLoaded) {
         done++; updateBar();
         if (done >= total && onAllLoaded) onAllLoaded();
       };
-      im.src = getImgUrl(IMG_LIST[idx]);
+      im.src = IMAGES[idx % IMAGES.length];
     })(i);
   }
 }
@@ -153,8 +111,7 @@ function lookAhead(fromIdx) {
 }
 
 /* ═══════════════════════════════════════════
-   OBJECT POOL — kích thước cố định, vòng tròn
-   Không bao giờ tạo object mới sau khi init
+   OBJECT POOL
 ═══════════════════════════════════════════ */
 function makeSlot() {
   return { img: null, imgIdx: -1, x: 0, y: 0, rot: 0, age: 0, maxAge: 0, alive: false, imgW: 0, imgH: 0 };
@@ -167,19 +124,14 @@ function Pool(size) {
   for (var i = 0; i < size; i++) this.slots.push(makeSlot());
 }
 
-/* Luôn spawn được — ghi đè slot cũ nhất khi pool đầy */
 Pool.prototype.spawn = function (imgIdx, img, x, y, rot, maxAge, imgW, imgH) {
   var p = this.slots[this.head];
   this.head = (this.head + 1) % this.slots.length;
   if (!p.alive) this.count++;
-  p.imgIdx = imgIdx;
-  p.img    = img;
-  p.x      = x;    p.y   = y;
-  p.rot    = rot;   p.age = 0;
-  p.maxAge = maxAge;
-  p.alive  = true;
-  p.imgW   = imgW || CFG.imgW;
-  p.imgH   = imgH || CFG.imgH;
+  p.imgIdx = imgIdx; p.img = img;
+  p.x = x; p.y = y; p.rot = rot; p.age = 0;
+  p.maxAge = maxAge; p.alive = true;
+  p.imgW = imgW || CFG.imgW; p.imgH = imgH || CFG.imgH;
 };
 
 Pool.prototype.anyAlive = function () { return this.count > 0; };
@@ -200,7 +152,6 @@ function CanvasTrail(canvas, pos) {
   this.idleTimer = null;
   this.interval  = 1000 / CFG.fpsCap;
   this.lastTime  = 0;
-
   this._resize();
   window.addEventListener('resize', this._resize.bind(this));
 }
@@ -247,7 +198,6 @@ CanvasTrail.prototype._spawn = function (x, y) {
   this.nextImg++;
   loadImg(idx);
   lookAhead(idx);
-
   var img = isReady(idx) ? _cache[idx] : null;
   var maxLong = IS_MOBILE ? 130 : 240;
   var imgW = maxLong, imgH = maxLong;
@@ -258,7 +208,6 @@ CanvasTrail.prototype._spawn = function (x, y) {
     if (nw >= nh) { imgW = maxLong; imgH = Math.round(maxLong / ratio); }
     else          { imgH = maxLong; imgW = Math.round(maxLong * ratio); }
   }
-
   var rot = (Math.random() - 0.5) * 24 * Math.PI / 180;
   this.pool.spawn(idx, img, x, y, rot, CFG.totalFrames, imgW, imgH);
 };
@@ -280,23 +229,16 @@ CanvasTrail.prototype._tick = function () {
   for (var i = 0; i < slots.length; i++) {
     var p = slots[i];
     if (!p.alive) continue;
-
-    // Nếu ảnh chưa load lúc spawn, thử lấy lại
     if (!p.img && p.imgIdx >= 0 && isReady(p.imgIdx)) {
       p.img = _cache[p.imgIdx];
     }
-
     p.age++;
     var t = p.age / p.maxAge;
-
     if (p.age >= p.maxAge) {
-      p.alive = false;
-      p.img   = null;
-      this.pool.count--;
+      p.alive = false; p.img = null; this.pool.count--;
       continue;
     }
-
-    if (!p.img) continue; // vẫn chưa load → skip render nhưng giữ slot
+    if (!p.img) continue;
 
     var alpha;
     if      (t < 0.20) { alpha = t / 0.20; }
@@ -309,40 +251,35 @@ CanvasTrail.prototype._tick = function () {
     else if (t < 0.55) { sc = 1.0; }
     else               { sc = 1.0 - (t - 0.55) / 0.45 * 0.2; }
 
-    // Float up: ảnh nổi lên theo thời gian
     var floatY = t * (IS_MOBILE ? 60 : 100);
-
-    var w = p.imgW * sc;
-    var h = p.imgH * sc;
+    var w = p.imgW * sc, h = p.imgH * sc;
 
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(p.x, p.y - floatY);
     ctx.rotate(p.rot);
 
-    // Bo góc tự nhiên — radius ~12% cạnh ngắn
     var r = Math.min(w, h) * 0.12;
     var x0 = -w * 0.5, y0 = -h * 0.5;
     ctx.beginPath();
     ctx.moveTo(x0 + r, y0);
     ctx.lineTo(x0 + w - r, y0);
-    ctx.quadraticCurveTo(x0 + w, y0,         x0 + w, y0 + r);
+    ctx.quadraticCurveTo(x0 + w, y0, x0 + w, y0 + r);
     ctx.lineTo(x0 + w, y0 + h - r);
-    ctx.quadraticCurveTo(x0 + w, y0 + h,     x0 + w - r, y0 + h);
+    ctx.quadraticCurveTo(x0 + w, y0 + h, x0 + w - r, y0 + h);
     ctx.lineTo(x0 + r, y0 + h);
-    ctx.quadraticCurveTo(x0,     y0 + h,     x0, y0 + h - r);
-    ctx.lineTo(x0,     y0 + r);
-    ctx.quadraticCurveTo(x0,     y0,         x0 + r, y0);
+    ctx.quadraticCurveTo(x0, y0 + h, x0, y0 + h - r);
+    ctx.lineTo(x0, y0 + r);
+    ctx.quadraticCurveTo(x0, y0, x0 + r, y0);
     ctx.closePath();
     ctx.clip();
-
     ctx.drawImage(p.img, x0, y0, w, h);
     ctx.restore();
   }
 };
 
 /* ═══════════════════════════════════════════
-   CURSOR (desktop only)
+   CURSOR
 ═══════════════════════════════════════════ */
 function Cursor(el, pos) {
   var tx = 0, ty = 0;
@@ -368,22 +305,17 @@ var trailInited = false;
 function initTrail() {
   if (trailInited) return;
   trailInited = true;
-
   document.body.classList.remove('loading');
 
-  var page2      = document.getElementById('page2');
+  var page2       = document.getElementById('page2');
   var btnSurprise = document.getElementById('btn-surprise');
-  var hintEl     = document.getElementById('surprise-hint');
-  var pos        = { x: -9999, y: -9999 };
+  var hintEl      = document.getElementById('surprise-hint');
+  var pos         = { x: -9999, y: -9999 };
   var trail;
   var eventsEnabled = false;
 
-  // Hiện bee loading bar ngay khi vào trang 2
-  if (hintEl) {
-    hintEl.classList.add('visible');
-  }
+  if (hintEl) hintEl.classList.add('visible');
 
-  // Throttle helper
   var pendingX = 0, pendingY = 0, pending = false;
   function scheduleUpdate(x, y) {
     pendingX = x; pendingY = y;
@@ -393,7 +325,6 @@ function initTrail() {
     }
   }
 
-  // Bật events — chỉ gọi sau khi bấm nút
   function enableEvents() {
     if (eventsEnabled) return;
     eventsEnabled = true;
@@ -414,19 +345,16 @@ function initTrail() {
     }, { passive: true });
   }
 
-  // Canvas trail (tạo sẵn, chưa chạy)
   var canvas = document.createElement('canvas');
   canvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:20;will-change:transform;transform:translateZ(0);';
   page2.appendChild(canvas);
   trail = new CanvasTrail(canvas, pos);
 
-  // Cursor desktop
   if (!IS_TOUCH) {
     var cursorEl = document.querySelector('.cursor');
     if (cursorEl) new Cursor(cursorEl, pos);
   }
 
-  // Bấm nút → bắt đầu trail
   function activateSurprise() {
     if (btnSurprise) {
       btnSurprise.style.pointerEvents = 'none';
@@ -437,9 +365,7 @@ function initTrail() {
       hintEl.classList.remove('visible');
       setTimeout(function () { hintEl.style.display = 'none'; }, 500);
     }
-    // Hiện chữ KNKT + dòng sub
     page2.classList.add('revealed');
-    // Hiện nút xem lời chúc
     var btnWishEl = document.getElementById('btn-wish');
     if (btnWishEl) setTimeout(function(){ btnWishEl.classList.add('visible'); }, 800);
     enableEvents();
@@ -450,10 +376,9 @@ function initTrail() {
     btnSurprise.addEventListener('click', activateSurprise);
     btnSurprise.addEventListener('touchend', function (e) { e.preventDefault(); activateSurprise(); });
   } else {
-    enableEvents(); // fallback nếu không có nút
+    enableEvents();
   }
 
-  // Load 10 ảnh — CHỈ hiện nút khi load xong hoàn toàn
   prewarm(function onAllLoaded() {
     var fillEl  = document.getElementById('bee-fill');
     var iconEl  = document.getElementById('bee-icon');
@@ -461,15 +386,10 @@ function initTrail() {
     if (fillEl)  fillEl.style.width = '100%';
     if (iconEl)  iconEl.style.left  = '100%';
     if (labelEl) labelEl.textContent = '✨ Sẵn sàng rồi!';
-    if (hintEl) {
-      setTimeout(function () { hintEl.classList.remove('visible'); }, 900);
-    }
-    if (btnSurprise) {
-      setTimeout(function () { btnSurprise.classList.add('visible'); }, 700);
-    }
+    if (hintEl)  setTimeout(function () { hintEl.classList.remove('visible'); }, 900);
+    if (btnSurprise) setTimeout(function () { btnSurprise.classList.add('visible'); }, 700);
   });
 
-  // ── Nút chuyển sang trang 3 ──
   var btnWish = document.getElementById('btn-wish');
   if (btnWish) {
     btnWish.addEventListener('click', goPage3);
@@ -489,29 +409,24 @@ function initPetals() {
   var container = document.getElementById('petalShower');
   if (!container || container._inited) return;
   container._inited = true;
-
   var colors = [
-    'rgba(255,105,135,0.75)',
-    'rgba(255,150,170,0.65)',
-    'rgba(255,80,110,0.7)',
-    'rgba(220,60,90,0.6)',
-    'rgba(255,180,190,0.55)',
-    'rgba(255,200,210,0.5)'
+    'rgba(255,105,135,0.75)','rgba(255,150,170,0.65)',
+    'rgba(255,80,110,0.7)','rgba(220,60,90,0.6)',
+    'rgba(255,180,190,0.55)','rgba(255,200,210,0.5)'
   ];
-
   for (var i = 0; i < 35; i++) {
     (function(idx) {
       var el = document.createElement('div');
       el.className = 'petal';
       var size = 10 + Math.random() * 14;
       el.style.cssText = [
-        'left:'            + (Math.random() * 100) + 'vw',
-        'width:'           + size + 'px',
-        'height:'          + (size * 1.5) + 'px',
-        'background:'      + colors[idx % colors.length],
-        'animation-duration:' + (4 + Math.random() * 6) + 's',
-        'animation-delay:' + (Math.random() * 8) + 's',
-        'border-radius:'   + (Math.random() > 0.5 ? '50% 0 50% 0' : '0 50% 0 50%')
+        'left:'+ (Math.random()*100)+'vw',
+        'width:'+ size +'px',
+        'height:'+ (size*1.5)+'px',
+        'background:'+ colors[idx % colors.length],
+        'animation-duration:'+ (4+Math.random()*6)+'s',
+        'animation-delay:'+ (Math.random()*8)+'s',
+        'border-radius:'+ (Math.random()>0.5?'50% 0 50% 0':'0 50% 0 50%')
       ].join(';');
       container.appendChild(el);
     })(i);
@@ -520,11 +435,6 @@ function initPetals() {
 
 var btnBack = document.getElementById('btn-back');
 if (btnBack) {
-  btnBack.addEventListener('click', function() {
-    document.body.classList.remove('go-page3');
-  });
-  btnBack.addEventListener('touchend', function(e) {
-    e.preventDefault();
-    document.body.classList.remove('go-page3');
-  });
+  btnBack.addEventListener('click', function() { document.body.classList.remove('go-page3'); });
+  btnBack.addEventListener('touchend', function(e) { e.preventDefault(); document.body.classList.remove('go-page3'); });
 }
