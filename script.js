@@ -31,19 +31,46 @@ var IS_TOUCH  = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 var IS_MOBILE = IS_TOUCH && window.screen.width <= 900;
 
 /* ═══════════════════════════════════════════
+   BASE PATH — tự động detect cho GitHub Pages
+   VD: https://user.github.io/repo/  → base = đúng thư mục
+       hoặc local file → dùng relative fallback
+═══════════════════════════════════════════ */
+var _base = (function() {
+  // Lấy script tag hiện tại để tính base path tuyệt đối
+  var scripts = document.getElementsByTagName('script');
+  var src = '';
+  for (var s = 0; s < scripts.length; s++) {
+    if (scripts[s].src && scripts[s].src.indexOf('script.js') !== -1) {
+      src = scripts[s].src;
+      break;
+    }
+  }
+  if (src) {
+    // bỏ "script.js" lấy thư mục gốc: "https://user.github.io/repo"
+    return src.replace(/\/script\.js(\?.*)?$/, '');
+  }
+  // fallback: dùng pathname của trang
+  var p = window.location.pathname.replace(/\/[^\/]*$/, '');
+  return window.location.origin + p;
+})();
+
+function getImgUrl(name) {
+  return _base + '/img/' + name + '.png';
+}
+
+/* ═══════════════════════════════════════════
    CONFIG
 ═══════════════════════════════════════════ */
+var IMG_LIST = ['img1','img2','img3','img4','img5','img6','img8','img9','img10'];
+
 var CFG = {
-  totalImages : 10,
-  imgDir      : './img/',
-  imgExt      : '.jpg',
+  totalImages : IMG_LIST.length,
   minDist     : IS_MOBILE ? 55  : 90,
   poolSize    : IS_MOBILE ? 6   : 10,
   imgW        : IS_MOBILE ? 110 : 210,
   imgH        : IS_MOBILE ? 83  : 158,
   totalFrames : IS_MOBILE ? 36  : 65,
   fpsCap      : IS_MOBILE ? 30  : 60,
-  prewarmN    : 10,   // load hết toàn bộ ngay từ đầu
   lookAheadN  : 5
 };
 
@@ -64,7 +91,7 @@ function loadImg(idx) {
     var im = new Image();
     im.onload  = function () { _cache[i] = im; };
     im.onerror = function () { _cache[i] = 'error'; };
-    im.src = CFG.imgDir + 'img' + (i + 1) + CFG.imgExt;
+    im.src = getImgUrl(IMG_LIST[i]);
   })(idx);
 }
 
@@ -82,7 +109,7 @@ function prewarm(onAllLoaded) {
     hintEl.innerHTML =
       '<div class="bee-track">' +
         '<div class="bee-fill" id="bee-fill"></div>' +
-        '<img class="bee-icon" id="bee-icon" src="./bee.png" alt="">' +
+        '<span class="bee-icon" id="bee-icon">🐝</span>' +
       '</div>' +
       '<span class="bee-label" id="bee-label">Đang tải... 0 / ' + total + '</span>';
   }
@@ -114,7 +141,7 @@ function prewarm(onAllLoaded) {
         done++; updateBar();
         if (done >= total && onAllLoaded) onAllLoaded();
       };
-      im.src = CFG.imgDir + 'img' + (idx + 1) + CFG.imgExt;
+      im.src = getImgUrl(IMG_LIST[idx]);
     })(i);
   }
 }
